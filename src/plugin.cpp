@@ -72,7 +72,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
    UI::Register();
    hasInverseSquareLighting();
    hasNativeMeshLightFlickerFix(); 
-   SKSE::AllocTrampoline(1 << 8);
+   SKSE::AllocTrampoline(1 << 6);
    TESObjectLIGH_GenDynamic::Install();
    TESObjectLIGH_GenDynamic::MagicLightThunkInstall(); 
    ObjectReference::InstallLoad3DHooks(); 

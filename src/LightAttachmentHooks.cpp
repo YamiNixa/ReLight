@@ -174,8 +174,6 @@ RE::NiAVObject* TESObjectREFRLoad3D::thunk(RE::TESObjectREFR* a_this, bool a_bac
 
     const auto baseFormID = baseObject->GetFormID();
 
-
-
     //skips fires with base ids below with animations off 
     // 1. Sky Haven chain activated fires
     // 2. Castle Volkihar fires that turn on
@@ -595,28 +593,6 @@ namespace ReferenceEffect
             return result;
         } 
 
-        if (ref->IsDynamicForm()) {
-            const auto base = ref->GetBaseObject();
-
-            if (!base) {
-                return result;
-            }
-
-            const auto formID = base->GetFormID();
-
-            if (formID != 0x000F8313 &&
-                formID != 0x000F8314 &&
-                formID != 0x000F8315 &&
-                formID != 0x000F8316 &&
-                formID != 0x000F8317 &&
-                formID != 0x000F8318 && 
-                formID != 0x0002ACD2 &&
-                formID != 0x0004E4EE) {
-
-                return result;
-            }
-        }
-
         auto rootNiAV = GetReferenceAttachRoot(a_this);
         if (!rootNiAV) {
             return result;
@@ -634,6 +610,33 @@ namespace ReferenceEffect
         auto root = netimmerse_cast<RE::NiNode*>(rootNiAV);
         if (!root) {
             return result;
+        }
+
+        const std::string_view name = root->name.c_str();
+
+        if (!name.starts_with("Weapon")) {
+            const auto base = ref->GetBaseObject();
+
+            if (!base) {
+                return result;
+            }
+
+            const auto formID = base->GetFormID();
+
+            if (formID != 0x000F8313 &&
+                formID != 0x000F8314 &&
+                formID != 0x000F8315 &&
+                formID != 0x000F8316 &&
+                formID != 0x000F8317 &&
+                formID != 0x000F8318 &&
+                formID != 0x0002ACD2 &&
+                formID != 0x0004E4EE) {
+
+                logger::info("Enchantment attach node name is not 'Weapon', skipping attachment. Root name: {}",
+                    name);
+
+                return result;
+            }
         }
 
         // Ignore temporary inventory references.

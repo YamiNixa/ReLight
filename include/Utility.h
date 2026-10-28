@@ -251,7 +251,7 @@ inline RE::NiAVObject* FindObjectByNameRecursive(RE::NiAVObject* root, std::stri
 inline void hasInverseSquareLighting()
 {
 	const auto path =
-		std::filesystem::path("Data/Shaders/InverseSquareLighting/InverseSquareLighting.hlsli");
+		std::filesystem::path("Data/SKSE/Plugins/CommunityShaders.dll");
 
 
 	globals::islInstalled = std::filesystem::exists(path);
