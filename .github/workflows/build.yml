@@ -1,0 +1,70 @@
+name: Build ReLight (Default All + Save All)
+
+# Build DLL ReLight yang sudah dipatch tombol Default All + Save All
+# per-plugin (Skyrim.esm, QuickLight.esp, dst) di GitHub Actions
+# (runner Windows gratis, sudah ada MSVC/VS2022).
+# Cara pakai: lihat CARA-PAKAI.txt di folder ini.
+# Artifact hasil build: Relight.dll (+ Relight.pdb) di tab Actions > job ini > Artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      COMMONLIB_SSE_FOLDER: C:\CommonLibVR
+      VCPKG_ROOT: C:\vcpkg
+    steps:
+      - name: Checkout patched source
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (cl.exe)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Clone CommonLibSSE-NG (alandtse/CommonLibVR, branch ng)
+        shell: pwsh
+        run: |
+          git clone --recursive https://github.com/alandtse/CommonLibVR.git C:\CommonLibVR
+          cd C:\CommonLibVR
+          git checkout ng
+          git log --oneline -1
+
+      - name: Clone + bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+
+      - name: Configure (CMake preset release)
+        shell: pwsh
+        run: cmake --preset release
+
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build build/release --config Release
+
+      - name: Verify DLL contains the new buttons
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter Relight.dll build | Select-Object -First 1
+          if (-not $dll) { throw "Relight.dll tidak ketemu di build/" }
+          Write-Host "DLL: $($dll.FullName) ($([math]::Round($dll.Length/1KB)) KB)"
+          $bytes = [System.IO.File]::ReadAllBytes($dll.FullName)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -notmatch "Default All") { throw "String 'Default All' tidak ada di DLL!" }
+          if ($text -notmatch "Save All") { throw "String 'Save All' tidak ada di DLL!" }
+          Write-Host "OK: 'Default All' dan 'Save All' ada di DLL."
+
+      - name: Upload patched DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: Relight-patched
+          path: |
+            build/**/Relight.dll
+            build/**/Relight.pdb
+          if-no-files-found: error

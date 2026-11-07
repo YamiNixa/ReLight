@@ -6,6 +6,7 @@
 #include "../LightData.h"
 #include "..//LightManager.h"
 #include "../Utility.h"
+#include <format>
 
 // note static in a header means each .cpp gets its own seperate vector 
 
@@ -215,6 +216,132 @@ inline void restoreLightToDefaults(RE::NiPointer<RE::NiLight> light) {
 
     logger::info("Restored '{}' to default config", lightName);
 }
+
+// ---------------------------------------------------------------------------
+// Per-plugin-group bulk actions (Default All / Save All), added 2026-11-08.
+// The single-light Save / Default buttons in RenderLightEditor() and the
+// per-group buttons in RenderLightList() below run exactly the same code
+// through these two helpers, so a group action can never drift from what
+// clicking Save / Default on one light does.
+// ---------------------------------------------------------------------------
+
+// Save one light, exactly as the old per-light Save button did:
+// refresh the LightConfig from the live light, update the runtime caches,
+// then write it out. For a plugin light with no JSON file yet this creates
+// one (saveNewConfiguration); otherwise it overwrites the existing entry
+// (saveConfiguration). Returns false (and logs why) when it cannot save.
+inline bool SaveSingleLight(const RE::NiPointer<RE::BSLight>& bsLight)
+{
+    if (!bsLight || !bsLight->light) {
+        logger::error("no ni light from bslight when saving template");
+        return false;
+    }
+
+    auto niLight = bsLight->light.get();
+
+    std::string lightNameRL = niLight->name.c_str();
+
+    if (lightNameRL.empty()) {
+        logger::debug("Nilight name empty when saving template");
+        return false;
+    }
+
+    // strip whichever prefix applies ("RL" or "PL")
+    auto lightName = removePrefix(lightNameRL, "RL");
+
+    LightConfig cfg;
+
+    if (LightData::foundConfigForLightByConfigID(niLight)) {
+
+        auto& baseConfig = LightData::configIDToJsonCfg[niLight->unk138];
+
+        LightData::updateConfigFromLight(cfg, baseConfig, niLight);
+
+        if (!LightData::updateRuntimeConfigCaches(cfg)) {
+            logger::warn("Failed to update runtime config caches for '{}'", lightName);
+        }
+
+        // Plugin light: create a new JSON config if one doesn't already exist
+        if (baseConfig.isPluginLight) {
+
+            bool configExists =
+                !baseConfig.configPath.empty() &&
+                std::filesystem::exists(baseConfig.configPath);
+
+            if (!configExists) {
+                logger::info(
+                    "Plugin light '{}' has no existing config file. Creating new configuration.",
+                    lightName
+                );
+                saveNewConfiguration(cfg);
+                logger::info("created new json file for {} at path {} ", baseConfig.menuName, cfg.configPath);
+                return true;
+            }
+            else {
+                // Existing plugin config - save normally
+                saveConfiguration(cfg);
+                logger::info("Saving file for {} at path {} ", baseConfig.menuName, cfg.configPath);
+                return true;
+            }
+        }
+        else {
+            // Existing Relight / normal light
+            if (!cfg.configPath.empty()) {
+                saveConfiguration(cfg);
+                return true;
+            }
+            else {
+                logger::warn(
+                    "Config for '{}' has no configPath, cannot save",
+                    lightName
+                );
+                return false;
+            }
+        }
+    }
+    else {
+        logger::warn("No config found for light '{}'", lightName);
+        return false;
+    }
+}
+
+// Reset one light to defaults, exactly as the old per-light Default button
+// did. Returns false when restoreLightToDefaults() would bail out early
+// (no default config, no JSON config entry, or no ref), so a group action
+// can count real failures instead of counting a no-op as a success.
+// NOTE: like the single-light Default button, this only resets the
+// in-memory config and the live light - it does NOT write any JSON file.
+// Use SaveSingleLight() / Save All afterwards to persist it.
+inline bool RestoreSingleLightToDefaults(const RE::NiPointer<RE::BSLight>& bsLight)
+{
+    if (!bsLight || !bsLight->light) {
+        logger::warn("Default clicked but no light selected");
+        return false;
+    }
+
+    auto* niLight = bsLight->light.get();
+
+    if (LightData::defaultConfigs.find(niLight->unk138) == LightData::defaultConfigs.end()) {
+        logger::warn("no config found to restore defaults from");
+        return false;
+    }
+    if (LightData::configIDToJsonCfg.find(niLight->GetLightRuntimeData().unk138) == LightData::configIDToJsonCfg.end()) {
+        logger::warn("No JSON config entry found for light ID {}", niLight->GetLightRuntimeData().unk138);
+        return false;
+    }
+    if (!LightData::GetRefFromLight(niLight)) {
+        logger::warn("no ref for configID {} cant restore defaults", niLight->unk138);
+        return false;
+    }
+
+    restoreLightToDefaults(bsLight->light);
+    logger::info("Restored defaults for '{}'", niLight->name.c_str());
+    return true;
+}
+
+// Last bulk-action result per group (menuCategory), shown on the group row
+// after a Default All / Save All click, e.g. "Saved 3/3 (0 failed)".
+inline std::unordered_map<std::string, std::string> groupBulkResult;
 
 
 
@@ -784,7 +911,7 @@ inline void DrawCatagoryGroup(
     }
     else
     {
-        // Single entry — just a flat selectable
+        // Single entry ï¿½ just a flat selectable
         ImGuiMCP::PushID(firstIdx);
         if (ImGuiMCP::Selectable(groupMenuName.c_str(), firstIdx == selectedIndex))
             selectedIndex = firstIdx;
@@ -830,7 +957,73 @@ inline void RenderLightList(
 
         for (const auto& category : sortedCategories)
         {
-            if (ImGuiMCP::TreeNode(category.c_str()))
+            // All light indices in this group. For Plugin Lights one
+            // menuCategory is exactly one plugin file (e.g. "Skyrim.esm"):
+            // CreateConfigFromPluginLight() sets menuCategory = modName.
+            std::vector<int> categoryIndices;
+            for (const auto& configPath : groupData.byCategory.at(category)) {
+                auto pathIt = groupData.byConfigPath.find(configPath);
+                if (pathIt != groupData.byConfigPath.end())
+                    categoryIndices.insert(categoryIndices.end(), pathIt->second.begin(), pathIt->second.end());
+            }
+
+            bool groupOpen = ImGuiMCP::TreeNode(category.c_str());
+
+            // Bulk buttons on the group header row itself, scoped to THIS
+            // group only - never to the whole Plugin Lights list.
+            // "##<category>" keeps the visible label short ("Default All" /
+            // "Save All") while giving every group's buttons a unique ID.
+            ImGuiMCP::SameLine();
+            if (ImGuiMCP::Button((std::string("Default All##") + category).c_str())) {
+                int okCount = 0;
+                int failCount = 0;
+                for (int idx : categoryIndices) {
+                    if (idx < 0 || idx >= static_cast<int>(lights.size())) {
+                        ++failCount;
+                        continue;
+                    }
+                    if (RestoreSingleLightToDefaults(lights[idx]))
+                        ++okCount;
+                    else
+                        ++failCount;
+                }
+                groupBulkResult[category] = std::format("Reset {}/{} ({} failed)", okCount, static_cast<int>(categoryIndices.size()), failCount);
+                logger::info("Default All for '{}': reset {}/{} lights ({} failed)", category, okCount, static_cast<int>(categoryIndices.size()), failCount);
+            }
+            if (ImGuiMCP::IsItemHovered()) {
+                std::string tip = std::format("Reset all {} lights in '{}' to defaults (in-memory only - use Save All to write them to disk)", static_cast<int>(categoryIndices.size()), category);
+                ImGuiMCP::SetTooltip("%s", tip.c_str());
+            }
+
+            ImGuiMCP::SameLine();
+            if (ImGuiMCP::Button((std::string("Save All##") + category).c_str())) {
+                int okCount = 0;
+                int failCount = 0;
+                for (int idx : categoryIndices) {
+                    if (idx < 0 || idx >= static_cast<int>(lights.size())) {
+                        ++failCount;
+                        continue;
+                    }
+                    if (SaveSingleLight(lights[idx]))
+                        ++okCount;
+                    else
+                        ++failCount;
+                }
+                groupBulkResult[category] = std::format("Saved {}/{} ({} failed)", okCount, static_cast<int>(categoryIndices.size()), failCount);
+                logger::info("Save All for '{}': saved {}/{} lights ({} failed)", category, okCount, static_cast<int>(categoryIndices.size()), failCount);
+            }
+            if (ImGuiMCP::IsItemHovered()) {
+                std::string tip = std::format("Save all {} lights in '{}' to their JSON configs", static_cast<int>(categoryIndices.size()), category);
+                ImGuiMCP::SetTooltip("%s", tip.c_str());
+            }
+
+            auto resultIt = groupBulkResult.find(category);
+            if (resultIt != groupBulkResult.end()) {
+                ImGuiMCP::SameLine();
+                ImGuiMCP::Text("%s", resultIt->second.c_str());
+            }
+
+            if (groupOpen)
             {
                 for (const auto& configPath : groupData.byCategory.at(category))
                 {

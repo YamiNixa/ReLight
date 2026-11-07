@@ -49,85 +49,14 @@ void __stdcall RenderLightEditor() {
 
     if (saveClicked) {
 
-        bool ok = false;
         saveButton.set(buttonState::Working);
 
+        bool ok = false;
         if (active.valid()) {
-            RE::NiPointer<RE::BSLight> selectedLight = active.get();
-            auto niLight = selectedLight->light.get();
-            if (!niLight) {
-                logger::error("no ni light from bslight when saving template");
-                return;
-            }
-
-            std::string lightNameRL = niLight->name.c_str();
-
-            if (lightNameRL.empty()) {
-                logger::debug("Nilight name empty when saving template");
-                return;
-            }
-
-            // strip whichever prefix applies ("RL" or "PL")
-            auto lightName = removePrefix(lightNameRL, "RL");
-
-            LightConfig cfg;
-
-            if (LightData::foundConfigForLightByConfigID(niLight)) {
-
-                auto& baseConfig = LightData::configIDToJsonCfg[niLight->unk138];
-
-                LightData::updateConfigFromLight(cfg, baseConfig, niLight);
-
-                if (!LightData::updateRuntimeConfigCaches(cfg)) {
-                    logger::warn("Failed to update runtime config caches for '{}'", lightName);
-                }
-
-                // Plugin light: create a new JSON config if one doesn't already exist
-                if (baseConfig.isPluginLight) {
-
-                    bool configExists =
-                        !baseConfig.configPath.empty() &&
-                        std::filesystem::exists(baseConfig.configPath);
-
-                    if (!configExists) {
-                        logger::info(
-                            "Plugin light '{}' has no existing config file. Creating new configuration.",
-                            lightName
-                        );
-                        saveNewConfiguration(cfg);
-                        logger::info("created new json file for {} at path {} ", baseConfig.menuName, cfg.configPath);
-                        ok = true;
-                    }
-                    else {
-                        // Existing plugin config — save normally
-                        saveConfiguration(cfg);
-                        logger::info("Saving file for {} at path {} ", baseConfig.menuName, cfg.configPath);
-                        ok = true;
-                    }
-                }
-                else {
-                    // Existing Relight / normal light
-                    if (!cfg.configPath.empty()) {
-                        saveConfiguration(cfg);
-                        ok = true;
-                    }
-                    else {
-                        logger::warn(
-                            "Config for '{}' has no configPath, cannot save",
-                            lightName
-                        );
-                        ok = false;
-                    }
-                }
-            }
-            else {
-                logger::warn("No config found for light '{}'", lightName);
-                ok = false;
-            }
+            ok = SaveSingleLight(active.get());
         }
         else {
             logger::warn("Save clicked but no light selected");
-            ok = false;
         }
 
         saveButton.set(ok ? buttonState::Success : buttonState::Fail, 2.0f);
@@ -135,18 +64,14 @@ void __stdcall RenderLightEditor() {
 
     if (defaultClicked) {
 
-        bool ok = false;
         defaultButton.set(buttonState::Working);
 
+        bool ok = false;
         if (active.valid()) {
-            auto selectedLight = active.get();
-            restoreLightToDefaults(selectedLight->light);
-            logger::info("Restored defaults for '{}'", selectedLight->light->name.c_str());
-            ok = true;
+            ok = RestoreSingleLightToDefaults(active.get());
         }
         else {
             logger::warn("Default clicked but no light selected");
-            ok = false;
         }
 
         defaultButton.set(ok ? buttonState::Success : buttonState::Fail, 2.0f);
