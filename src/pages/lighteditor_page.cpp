@@ -441,7 +441,7 @@ void __stdcall RenderLightEditor() {
 
                     ImGuiMCP::Columns(2, nullptr, false);
 
-                    if (ImGuiMCP::BeginChild("BrightnessBox", ImGuiMCP::ImVec2(0, 200), true,
+                    if (ImGuiMCP::BeginChild("BrightnessBox", ImGuiMCP::ImVec2(0, 240), true,
                         ImGuiMCP::ImGuiWindowFlags_NoScrollbar))
                     {
                         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text,
@@ -537,6 +537,43 @@ void __stdcall RenderLightEditor() {
                                 }
                             }
                         }
+
+                    // --- Copy / Paste Illuminance (added 2026-11-22) ---
+                    // Only the Illuminance values (Brightness / Cutoff /
+                    // Size / Radius). Paste is live-only - use Save / Save All
+                    // afterwards to write it to JSON.
+                    ImGuiMCP::Separator();
+
+                    if (ImGuiMCP::Button("Copy Illum.")) {
+                        CopyIlluminanceFromLight(selectedLight, selectedIslRt, showISLSliders);
+                    }
+                    if (ImGuiMCP::IsItemHovered()) {
+                        ImGuiMCP::SetTooltip("Copy this light's Illuminance (Brightness / Cutoff / Size / Radius) to the clipboard");
+                    }
+
+                    ImGuiMCP::SameLine();
+                    ImGuiMCP::BeginDisabled(!g_illumClipboard.valid);
+                    if (ImGuiMCP::Button("Paste Illum.")) {
+                        PasteIlluminanceToSelected(selectedLight, g_illumClipboard);
+                    }
+                    ImGuiMCP::EndDisabled();
+                    if (ImGuiMCP::IsItemHovered()) {
+                        ImGuiMCP::SetTooltip("Paste the copied Illuminance to the currently selected light");
+                    }
+
+                    ImGuiMCP::SameLine();
+                    ImGuiMCP::BeginDisabled(!g_illumClipboard.valid);
+                    if (ImGuiMCP::Button("Paste All Same Name")) {
+                        PasteIlluminanceToSameName(filteredLights, g_illumClipboard);
+                    }
+                    ImGuiMCP::EndDisabled();
+                    if (ImGuiMCP::IsItemHovered()) {
+                        ImGuiMCP::SetTooltip("Paste the copied Illuminance to every light in this list with the same base name (e.g. all 'RiftenLight01')");
+                    }
+
+                    if (!g_illumStatusText.empty()) {
+                        ImGuiMCP::Text("%s", g_illumStatusText.c_str());
+                    }
                     }
 
                     ImGuiMCP::EndChild(); // BrightnessBox

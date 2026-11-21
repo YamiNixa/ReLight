@@ -1,0 +1,333 @@
+diff --git a/include/pages/lighteditor_page.h b/include/pages/lighteditor_page.h
+index a7264c4..0da1752 100644
+--- a/include/pages/lighteditor_page.h
++++ b/include/pages/lighteditor_page.h
+@@ -339,6 +339,271 @@ inline bool RestoreSingleLightToDefaults(const RE::NiPointer<RE::BSLight>& bsLig
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Copy / Paste Illuminance (added 2026-11-22).
++// Adrian only ever edits the Illuminance box (Brightness / Cutoff / Size /
++// Radius), so copy/paste is scoped to exactly those four values - nothing
++// else (no Flicker, Translation, Color or Non-Runtime settings).
++//
++// Flow: select a light, set its Illuminance sliders, click "Copy Illum.".
++// Then either click another light and "Paste Illum." (one by one), or click
++// "Paste All Same Name" to hit every loaded light in the currently shown
++// list (Plugin Lights or Relight Lights) that shares the source light's
++// BASE name.
++//
++// Paste is LIVE-ONLY, exactly like dragging a slider by hand: it updates
++// the stored LightConfig and the live light, but writes NO json file.
++// Use Save (single light) or Save All (per-plugin group) afterwards to
++// persist it.
++// ---------------------------------------------------------------------------
++
++// Forward declaration: defined further below (used by GetLightBaseName).
++inline std::string ResolveMenuName(const LightConfig& cfg);
++
++// One light's Illuminance values, as copied from the Illuminance sliders:
++// Brightness = config.startingFade, Radius = live radius.x, and - when the
++// source light shows the ISL sliders - Cutoff / Size from its ISL overlay.
++struct IlluminanceClipboard
++{
++    bool valid = false;
++    std::string sourceName;      // full display name, e.g. "RiftenLight01 (000008C0)"
++    std::string sourceBaseName;  // menuName with the " (XXXXXXXX)" suffix stripped
++    float brightness = 0.0f;
++    float radius = 0.0f;
++    float cutoff = 0.3f;
++    float size = 2.0f;
++    bool hasISL = false;
++};
++
++// Clipboard + last status line. Inline variables like groupBulkResult below;
++// only lighteditor_page.cpp uses them.
++inline IlluminanceClipboard g_illumClipboard;
++inline std::string g_illumStatusText;
++
++// Plugin-light menuNames are built in CreateConfigFromPluginLight
++// (src/config.cpp) as "<edid> (<configID as 8 hex digits>)", e.g.
++// "RiftenLight01 (000008C0)". The configID is a runtime counter that is
++// different for every instance, so two RiftenLight01 lights NEVER share a
++// full menuName. "Paste All Same Name" therefore matches on the base name
++// with that trailing " (XXXXXXXX)" suffix stripped.
++inline std::string StripConfigIDSuffix(const std::string& menuName)
++{
++    // Suffix is " (XXXXXXXX)": 1 space + '(' + 8 hex digits + ')' = 11 chars.
++    constexpr std::size_t kSuffixLen = 11;
++    if (menuName.size() <= kSuffixLen) {
++        return menuName;
++    }
++    const std::size_t pos = menuName.size() - kSuffixLen;
++    if (menuName[pos] != ' ' || menuName[pos + 1] != '(' || menuName.back() != ')') {
++        return menuName;
++    }
++    for (std::size_t i = pos + 2; i < menuName.size() - 1; ++i) {
++        const char c = menuName[i];
++        const bool isHex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
++        if (!isHex) {
++            return menuName;
++        }
++    }
++    return menuName.substr(0, pos);
++}
++
++inline std::string GetLightBaseName(const RE::NiPointer<RE::BSLight>& bsLight)
++{
++    if (!bsLight || !bsLight->light) {
++        return {};
++    }
++    auto it = LightData::configIDToJsonCfg.find(bsLight->light->GetLightRuntimeData().unk138);
++    if (it == LightData::configIDToJsonCfg.end()) {
++        return {};
++    }
++    return StripConfigIDSuffix(ResolveMenuName(it->second));
++}
++
++// Copy the selected light's Illuminance into the clipboard. islRt is the
++// selected light's ISL overlay (nullptr when ISL is not installed) and
++// islSlidersShown is the same flag the editor uses to decide whether the
++// Cutoff / Size sliders are shown for this light - Cutoff / Size are only
++// copied when the sliders are actually shown, otherwise the overlay fields
++// hold no meaningful values for this light.
++inline bool CopyIlluminanceFromLight(const RE::NiPointer<RE::BSLight>& bsLight, Overlay* islRt, bool islSlidersShown)
++{
++    if (!bsLight || !bsLight->light) {
++        logger::warn("Copy Illum. clicked but no light selected");
++        g_illumStatusText = "Copy failed: no light selected";
++        return false;
++    }
++
++    auto* niLight = bsLight->light.get();
++    auto& rtData = niLight->GetLightRuntimeData();
++
++    auto it = LightData::configIDToJsonCfg.find(rtData.unk138);
++    if (it == LightData::configIDToJsonCfg.end()) {
++        logger::warn("No config found for light '{}' while copying illuminance", niLight->name.c_str());
++        g_illumStatusText = "Copy failed (see relight.log)";
++        return false;
++    }
++    const auto& cfg = it->second;
++
++    g_illumClipboard.valid = true;
++    g_illumClipboard.sourceName = ResolveMenuName(cfg);
++    g_illumClipboard.sourceBaseName = StripConfigIDSuffix(g_illumClipboard.sourceName);
++    g_illumClipboard.brightness = cfg.startingFade;
++    g_illumClipboard.radius = rtData.radius.x;
++    g_illumClipboard.hasISL = (islRt != nullptr) && islSlidersShown;
++    if (g_illumClipboard.hasISL) {
++        g_illumClipboard.cutoff = islRt->cutoffOverride;
++        g_illumClipboard.size = islRt->size;
++    }
++
++    if (g_illumClipboard.hasISL) {
++        g_illumStatusText = std::format("Copied '{}': B {:.1f} / C {:.2f} / S {:.2f}",
++            g_illumClipboard.sourceName, g_illumClipboard.brightness,
++            g_illumClipboard.cutoff, g_illumClipboard.size);
++    } else {
++        g_illumStatusText = std::format("Copied '{}': B {:.1f} / R {:.2f}",
++            g_illumClipboard.sourceName, g_illumClipboard.brightness,
++            g_illumClipboard.radius);
++    }
++    logger::info("Copy Illum.: {}", g_illumStatusText);
++    return true;
++}
++
++// Apply the clipboard to ONE light, doing exactly what the Illuminance
++// sliders do for that light, plus keeping the stored config in sync:
++//  - stored config: startingFade (Brightness) - this is what Save All
++//    writes back to JSON; radius / size / cutoffOverride are kept in sync
++//    too (Save reads them back from the live light, so this only makes the
++//    stored config match what is already live).
++//  - live runtime: fade + radius.x on this light instance.
++//  - ISL overlay (when the copied light had ISL values): cutoffOverride
++//    + size on this light instance.
++//  - the same values are pushed to the active/shadow duplicates of THIS
++//    light instance (matching unk138), mirroring the Brightness slider's
++//    shadowSceneNode loop.
++// Returns false when the light has no config entry. Writes NO json file.
++inline bool ApplyIlluminanceToLight(const RE::NiPointer<RE::BSLight>& bsLight, const IlluminanceClipboard& clip)
++{
++    if (!clip.valid) {
++        return false;
++    }
++    if (!bsLight || !bsLight->light) {
++        return false;
++    }
++
++    auto* niLight = bsLight->light.get();
++    auto& rtData = niLight->GetLightRuntimeData();
++
++    auto it = LightData::configIDToJsonCfg.find(rtData.unk138);
++    if (it == LightData::configIDToJsonCfg.end()) {
++        logger::warn("No config found for light '{}' while pasting illuminance", niLight->name.c_str());
++        return false;
++    }
++    auto& cfg = it->second;
++
++    // Stored config.
++    cfg.startingFade = clip.brightness;
++    cfg.radius = clip.radius;
++    if (clip.hasISL) {
++        cfg.size = clip.size;
++        cfg.cutoffOverride = clip.cutoff;
++    }
++
++    // Live runtime of this light instance.
++    rtData.fade = clip.brightness;
++    rtData.radius.x = clip.radius;
++    if (clip.hasISL && globals::islInstalled) {
++        if (auto* isl = Overlay::Get(niLight)) {
++            isl->cutoffOverride = clip.cutoff;
++            isl->size = clip.size;
++        }
++    }
++
++    // Push to the active/shadow duplicates of this instance (same unk138),
++    // mirroring the Brightness slider's shadowSceneNode loop.
++    auto* ssNode = RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0];
++    if (ssNode) {
++        auto& rt = ssNode->GetRuntimeData();
++        auto pushToList = [&](auto& lightList) {
++            for (auto& currentLight : lightList) {
++                if (!currentLight) {
++                    continue;
++                }
++                auto& activeData = currentLight->light->GetLightRuntimeData();
++                if (activeData.unk138 != rtData.unk138) {
++                    continue;
++                }
++                activeData.fade = clip.brightness;
++                activeData.radius.x = clip.radius;
++                if (clip.hasISL && globals::islInstalled) {
++                    if (auto* isl = Overlay::Get(currentLight->light.get())) {
++                        isl->cutoffOverride = clip.cutoff;
++                        isl->size = clip.size;
++                    }
++                }
++            }
++        };
++        pushToList(rt.activeLights);
++        pushToList(rt.activeShadowLights);
++    }
++
++    return true;
++}
++
++// Paste to the currently selected light (one-by-one flow) and report it.
++inline bool PasteIlluminanceToSelected(const RE::NiPointer<RE::BSLight>& bsLight, const IlluminanceClipboard& clip)
++{
++    if (!clip.valid) {
++        g_illumStatusText = "Nothing copied yet - click Copy Illum. first";
++        return false;
++    }
++    if (ApplyIlluminanceToLight(bsLight, clip)) {
++        g_illumStatusText = std::format("Pasted to '{}'", GetLightBaseName(bsLight));
++        logger::info("Paste Illum.: {}", g_illumStatusText);
++        return true;
++    }
++    g_illumStatusText = "Paste failed (see relight.log)";
++    return false;
++}
++
++// Paste to every light in `lights` whose base name matches the copied
++// light's base name. `lights` is the currently displayed list (Plugin
++// Lights or Relight Lights). Returns {pasted, failed}.
++inline std::pair<int, int> PasteIlluminanceToSameName(
++    const std::vector<RE::NiPointer<RE::BSLight>>& lights,
++    const IlluminanceClipboard& clip)
++{
++    int okCount = 0;
++    int failCount = 0;
++    int matchCount = 0;
++
++    if (!clip.valid) {
++        g_illumStatusText = "Nothing copied yet - click Copy Illum. first";
++        return { okCount, failCount };
++    }
++
++    for (const auto& light : lights) {
++        if (GetLightBaseName(light) != clip.sourceBaseName) {
++            continue;
++        }
++        ++matchCount;
++        if (ApplyIlluminanceToLight(light, clip)) {
++            ++okCount;
++        } else {
++            ++failCount;
++        }
++    }
++
++    if (matchCount == 0) {
++        g_illumStatusText = std::format("No lights named '{}' in this list", clip.sourceBaseName);
++    } else {
++        g_illumStatusText = std::format("Pasted '{}' to {}/{} lights ({} failed)",
++            clip.sourceBaseName, okCount, matchCount, failCount);
++    }
++    logger::info("Paste All Same Name: {}", g_illumStatusText);
++    return { okCount, failCount };
++}
++
++
+ // Last bulk-action result per group (menuCategory), shown on the group row
+ // after a Default All / Save All click, e.g. "Saved 3/3 (0 failed)".
+ inline std::unordered_map<std::string, std::string> groupBulkResult;
+diff --git a/src/pages/lighteditor_page.cpp b/src/pages/lighteditor_page.cpp
+index e53be54..f58fb72 100644
+--- a/src/pages/lighteditor_page.cpp
++++ b/src/pages/lighteditor_page.cpp
+@@ -441,7 +441,7 @@ void __stdcall RenderLightEditor() {
+ 
+                     ImGuiMCP::Columns(2, nullptr, false);
+ 
+-                    if (ImGuiMCP::BeginChild("BrightnessBox", ImGuiMCP::ImVec2(0, 200), true,
++                    if (ImGuiMCP::BeginChild("BrightnessBox", ImGuiMCP::ImVec2(0, 240), true,
+                         ImGuiMCP::ImGuiWindowFlags_NoScrollbar))
+                     {
+                         ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text,
+@@ -537,6 +537,43 @@ void __stdcall RenderLightEditor() {
+                                 }
+                             }
+                         }
++
++                    // --- Copy / Paste Illuminance (added 2026-11-22) ---
++                    // Only the Illuminance values (Brightness / Cutoff /
++                    // Size / Radius). Paste is live-only - use Save / Save All
++                    // afterwards to write it to JSON.
++                    ImGuiMCP::Separator();
++
++                    if (ImGuiMCP::Button("Copy Illum.")) {
++                        CopyIlluminanceFromLight(selectedLight, selectedIslRt, showISLSliders);
++                    }
++                    if (ImGuiMCP::IsItemHovered()) {
++                        ImGuiMCP::SetTooltip("Copy this light's Illuminance (Brightness / Cutoff / Size / Radius) to the clipboard");
++                    }
++
++                    ImGuiMCP::SameLine();
++                    ImGuiMCP::BeginDisabled(!g_illumClipboard.valid);
++                    if (ImGuiMCP::Button("Paste Illum.")) {
++                        PasteIlluminanceToSelected(selectedLight, g_illumClipboard);
++                    }
++                    ImGuiMCP::EndDisabled();
++                    if (ImGuiMCP::IsItemHovered()) {
++                        ImGuiMCP::SetTooltip("Paste the copied Illuminance to the currently selected light");
++                    }
++
++                    ImGuiMCP::SameLine();
++                    ImGuiMCP::BeginDisabled(!g_illumClipboard.valid);
++                    if (ImGuiMCP::Button("Paste All Same Name")) {
++                        PasteIlluminanceToSameName(filteredLights, g_illumClipboard);
++                    }
++                    ImGuiMCP::EndDisabled();
++                    if (ImGuiMCP::IsItemHovered()) {
++                        ImGuiMCP::SetTooltip("Paste the copied Illuminance to every light in this list with the same base name (e.g. all 'RiftenLight01')");
++                    }
++
++                    if (!g_illumStatusText.empty()) {
++                        ImGuiMCP::Text("%s", g_illumStatusText.c_str());
++                    }
+                     }
+ 
+                     ImGuiMCP::EndChild(); // BrightnessBox

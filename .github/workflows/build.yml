@@ -1,9 +1,11 @@
-name: Build ReLight (Default All + Save All)
+name: Build ReLight (Default All + Save All + Copy/Paste Illum.)
 
-# Build DLL ReLight yang sudah dipatch tombol Default All + Save All
-# per-plugin (Skyrim.esm, QuickLight.esp, dst) di GitHub Actions
-# (runner Windows gratis, sudah ada MSVC/VS2022).
-# Cara pakai: lihat CARA-PAKAI.txt di folder ini.
+# Build DLL ReLight yang sudah dipatch:
+#  - tombol Default All + Save All per-plugin (patch 2026-11-08)
+#  - tombol Copy Illum. / Paste Illum. / Paste All Same Name di kotak
+#    Illuminance (patch 2026-11-22, relight-copy-paste-illum.patch)
+# di GitHub Actions (runner Windows gratis, sudah ada MSVC/VS2022).
+# Cara pakai: lihat CARA-PAKAI-ILLUM.txt di folder ini.
 # Artifact hasil build: Relight.dll (+ Relight.pdb) di tab Actions > job ini > Artifacts.
 
 on:
@@ -58,12 +60,14 @@ jobs:
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
           if ($text -notmatch "Default All") { throw "String 'Default All' tidak ada di DLL!" }
           if ($text -notmatch "Save All") { throw "String 'Save All' tidak ada di DLL!" }
-          Write-Host "OK: 'Default All' dan 'Save All' ada di DLL."
+          if ($text -notmatch "Copy Illum\.") { throw "String 'Copy Illum.' tidak ada di DLL!" }
+          if ($text -notmatch "Paste All Same Name") { throw "String 'Paste All Same Name' tidak ada di DLL!" }
+          Write-Host "OK: 'Default All', 'Save All', 'Copy Illum.', 'Paste All Same Name' ada di DLL."
 
       - name: Upload patched DLL
         uses: actions/upload-artifact@v4
         with:
-          name: Relight-patched
+          name: Relight-patched-illum
           path: |
             build/**/Relight.dll
             build/**/Relight.pdb
